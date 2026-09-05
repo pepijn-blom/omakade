@@ -98,7 +98,7 @@ bool tryKodiPlayerOpen(const QString& itemId) {
   if (payload.isEmpty()) {
     return false;
   }
-  QString url = qEnvironmentVariable(QStringLiteral("OMAKADE_KODI_URL"));
+  QString url = qEnvironmentVariable("OMAKADE_KODI_URL");
   if (url.isEmpty()) {
     url = QStringLiteral("http://127.0.0.1:8080/jsonrpc");
   }
