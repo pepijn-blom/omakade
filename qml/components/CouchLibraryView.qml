@@ -25,7 +25,8 @@ FocusScope {
         { label: "FAUGUS", value: "Faugus", enabled: Preferences.faugusEnabled },
         { label: "RETROARCH", value: "RetroArch", enabled: Preferences.retroArchEnabled },
         { label: "PCSX2", value: "PCSX2", enabled: Preferences.pcsx2Enabled },
-        { label: "RYUJINX", value: "Ryujinx", enabled: Preferences.ryujinxEnabled }
+        { label: "RYUJINX", value: "Ryujinx", enabled: Preferences.ryujinxEnabled },
+        { label: "KODI", value: "Kodi", enabled: Preferences.kodiEnabled }
     ].filter(function(option) { return option.enabled === undefined || option.enabled })
     readonly property bool detailView: (viewOverride.length > 0
                                         ? viewOverride : Preferences.couchLibraryView) !== "grid"
@@ -150,6 +151,7 @@ FocusScope {
 
     onCurrentIndexChanged: refreshCurrentGame()
     onLibraryModelChanged: {
+        currentIndex = libraryModel && libraryModel.rowCount() > 0 ? 0 : -1
         syncGameViews()
         refreshCurrentGame()
     }
@@ -528,7 +530,8 @@ FocusScope {
 
         Text {
             width: parent.width
-            text: ((root.currentIndex + 1) + " / " + root.libraryModel.rowCount()
+            text: ((KodiLibrary && KodiLibrary.browsing ? KodiLibrary.browseTitle + "  ·  " : "")
+                   + (root.currentIndex + 1) + " / " + root.libraryModel.rowCount()
                    + "  ·  " + (root.currentGame.source || "LIBRARY")
                    + (root.currentGame.year ? "  ·  " + root.currentGame.year : "")).toUpperCase()
             textFormat: Text.PlainText

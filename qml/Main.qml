@@ -38,11 +38,15 @@ ApplicationWindow {
                                             || (Pcsx2Library ? Pcsx2Library.scanning : false)
                                             || (RyujinxLibrary ? RyujinxLibrary.scanning : false)
                                             || (BattleNetLibrary ? BattleNetLibrary.scanning : false)
+                                            || (KodiLibrary ? KodiLibrary.scanning : false)
+    readonly property bool kodiBrowsing: KodiLibrary ? KodiLibrary.browsing : false
+    readonly property var activeLibraryModel: root.kodiBrowsing ? KodiLibrary.browseItems : Library
     readonly property int ownedGameCount: SteamAccount
                                           ? SteamAccount.ownedGameCount
                                           : OwnedGameCountOverride
     readonly property Item sourceRowEndButton:
-        ryujinxSourceButton.visible && ryujinxSourceButton.enabled ? ryujinxSourceButton
+        kodiSourceButton.visible && kodiSourceButton.enabled ? kodiSourceButton
+      : ryujinxSourceButton.visible && ryujinxSourceButton.enabled ? ryujinxSourceButton
       : pcsx2SourceButton.visible && pcsx2SourceButton.enabled ? pcsx2SourceButton
       : retroArchSourceButton.visible && retroArchSourceButton.enabled ? retroArchSourceButton
       : faugusSourceButton.visible && faugusSourceButton.enabled ? faugusSourceButton
@@ -249,6 +253,7 @@ ApplicationWindow {
         if (Pcsx2Library && Preferences.pcsx2Enabled) Pcsx2Library.refresh()
         if (RyujinxLibrary && Preferences.ryujinxEnabled) RyujinxLibrary.refresh()
         if (BattleNetLibrary && Preferences.battleNetEnabled) BattleNetLibrary.refresh()
+        if (KodiLibrary && Preferences.kodiEnabled) KodiLibrary.refresh()
     }
 
     function focusAboveGrid() {
@@ -363,11 +368,30 @@ ApplicationWindow {
         return installations.length > 0 ? installations[0] : fallback
     }
 
+    function activateLibraryItem(index) {
+        const game = root.activeLibraryModel.get(index)
+        if (game && game.source === "Kodi" && KodiLibrary && KodiLibrary.openIfContainer(game.appId)) {
+            libraryView.currentIndex = root.activeLibraryModel.rowCount() > 0 ? 0 : -1
+            if (root.couchMode) {
+                couchLibraryView.currentIndex = libraryView.currentIndex
+                couchLibraryView.refreshCurrentGame()
+            }
+            Qt.callLater(root.focusLibrary)
+            return
+        }
+        root.openGame(index)
+    }
+
     function openGame(index) {
         selectedIndex = index
-        selectedGame = Library.get(index)
-        selectedInstallations = Library.installations(index)
-        selectedInstallation = preferredInstallation(selectedInstallations, selectedGame)
+        selectedGame = root.activeLibraryModel.get(index)
+        if (root.kodiBrowsing) {
+            selectedInstallations = KodiLibrary.browseItems.installations(index)
+            selectedInstallation = selectedGame
+        } else {
+            selectedInstallations = Library.installations(index)
+            selectedInstallation = preferredInstallation(selectedInstallations, selectedGame)
+        }
         if (!DemoMode && selectedInstallation.source === "Steam") {
             Achievements.load(selectedInstallation.appId)
             if (SteamAccount) {
@@ -549,8 +573,10 @@ ApplicationWindow {
                                    selectedInstallation.runner || "",
                                    selectedInstallation.installPath || "",
                                    selectedInstallation.launchTarget || "")) {
-            Library.recordLaunch(selectedIndex, selectedInstallation.source,
-                                 selectedInstallation.runner || "", selectedInstallation.appId)
+            if (!root.kodiBrowsing) {
+                Library.recordLaunch(selectedIndex, selectedInstallation.source,
+                                     selectedInstallation.runner || "", selectedInstallation.appId)
+            }
             showToast("Opening " + selectedGame.title + " in " + selectedInstallation.source)
             if (Preferences.closeAfterLaunch) {
                 Qt.callLater(Qt.quit)
@@ -728,6 +754,9 @@ ApplicationWindow {
                 detailsLoader.item.closeCollectionEditor()
             } else if (root.detailOpen) {
                 root.closeDetails()
+            } else if (root.kodiBrowsing && KodiLibrary.goBack()) {
+                libraryView.currentIndex = root.activeLibraryModel.rowCount() > 0 ? 0 : -1
+                root.focusLibrary()
             } else if (!root.couchMode && searchField.text.length > 0) {
                 searchField.clear()
                 libraryView.focusGrid()
@@ -750,21 +779,21 @@ ApplicationWindow {
         enabled: !root.couchMode && root.navigationContainer() === null
                  && libraryView.gridFocused
                  && libraryView.currentIndex >= 0
-        onActivated: root.openGame(libraryView.currentIndex)
+        onActivated: root.activateLibraryItem(libraryView.currentIndex)
     }
     Shortcut {
         sequence: "Enter"
         enabled: !root.couchMode && root.navigationContainer() === null
                  && libraryView.gridFocused
                  && libraryView.currentIndex >= 0
-        onActivated: root.openGame(libraryView.currentIndex)
+        onActivated: root.activateLibraryItem(libraryView.currentIndex)
     }
     Shortcut {
         sequence: "Space"
         enabled: !root.couchMode && root.navigationContainer() === null
                  && libraryView.gridFocused
                  && libraryView.currentIndex >= 0
-        onActivated: root.openGame(libraryView.currentIndex)
+        onActivated: root.activateLibraryItem(libraryView.currentIndex)
     }
 
     onActiveChanged: {
@@ -961,7 +990,10 @@ ApplicationWindow {
 
                     onTextChanged: {
                         Library.searchText = text
-                        libraryView.currentIndex = Library.rowCount() > 0 ? 0 : -1
+                        if (KodiLibrary && KodiLibrary.browseItems) {
+                            KodiLibrary.browseItems.searchText = text
+                        }
+                        libraryView.currentIndex = root.activeLibraryModel.rowCount() > 0 ? 0 : -1
                     }
                     Keys.onEscapePressed: function(event) {
                         if (text.length > 0) {
@@ -1220,6 +1252,7 @@ ApplicationWindow {
                         id: ryujinxSourceButton
                         objectName: "ryujinxSourceButton"
                         property Item controllerLeftTarget: pcsx2SourceButton
+                        property Item controllerRightTarget: kodiSourceButton
                         property Item controllerDownTarget: statusFilterButton
                         text: "RYUJINX"
                         compact: true
@@ -1227,6 +1260,20 @@ ApplicationWindow {
                         selected: Library.sourceFilter === "Ryujinx"
                         onClicked: {
                             Library.sourceFilter = "Ryujinx"
+                            libraryView.currentIndex = Library.rowCount() > 0 ? 0 : -1
+                        }
+                    }
+                    GlassButton {
+                        id: kodiSourceButton
+                        objectName: "kodiSourceButton"
+                        property Item controllerLeftTarget: ryujinxSourceButton
+                        property Item controllerDownTarget: statusFilterButton
+                        text: "KODI"
+                        compact: true
+                        visible: Preferences.kodiEnabled
+                        selected: Library.sourceFilter === "Kodi"
+                        onClicked: {
+                            Library.sourceFilter = "Kodi"
                             libraryView.currentIndex = Library.rowCount() > 0 ? 0 : -1
                         }
                     }
@@ -1405,12 +1452,38 @@ ApplicationWindow {
                 Item { Layout.fillWidth: true }
             }
 
+            RowLayout {
+                Layout.fillWidth: true
+                visible: root.kodiBrowsing
+                spacing: 8
+                GlassButton {
+                    objectName: "kodiBrowseBackButton"
+                    compact: true
+                    text: "BACK"
+                    onClicked: {
+                        if (KodiLibrary && KodiLibrary.goBack()) {
+                            libraryView.currentIndex = root.activeLibraryModel.rowCount() > 0 ? 0 : -1
+                            root.focusLibrary()
+                        }
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: KodiLibrary ? KodiLibrary.browseTitle : ""
+                    color: Theme.brightForeground
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                    elide: Text.ElideMiddle
+                }
+            }
+
             LibraryView {
                 id: libraryView
                 objectName: "libraryView"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                libraryModel: Library
+                libraryModel: root.activeLibraryModel
                 scanning: root.libraryScanning
                 filtersActive: root.organizationFiltersActive || Library.searchText !== ""
                 onClearFiltersRequested: root.clearLibraryFilters()
@@ -1429,6 +1502,10 @@ ApplicationWindow {
                             ? "Ryujinx was not found"
                             : Library.sourceFilter === "Battle.net" && BattleNetLibrary && !BattleNetLibrary.battleNetDetected
                             ? "Battle.net was not found"
+                            : Library.sourceFilter === "Kodi" && KodiLibrary && !KodiLibrary.kodiDetected
+                            ? "Kodi was not found"
+                            : root.kodiBrowsing && KodiLibrary && KodiLibrary.browseEmptyText.length > 0
+                            ? KodiLibrary.browseEmptyText
                             : Library.sourceFilter === "Lutris" && LutrisLibrary && !LutrisLibrary.lutrisDetected
                             ? "Lutris was not found"
                             : Library.sourceFilter === "Steam" && SteamLibrary && !SteamLibrary.steamDetected
@@ -1457,11 +1534,20 @@ ApplicationWindow {
                               ? LutrisLibrary.errorText
                               : Library.sourceFilter === "Battle.net" && BattleNetLibrary && BattleNetLibrary.errorText.length > 0
                               ? BattleNetLibrary.errorText
+                              : Library.sourceFilter === "Kodi" && KodiLibrary && KodiLibrary.errorText.length > 0
+                              ? KodiLibrary.errorText
+                              : root.kodiBrowsing && KodiLibrary && KodiLibrary.browseEmptyText.length > 0
+                              ? KodiLibrary.browseEmptyText
                               : SteamLibrary && SteamLibrary.errorText.length > 0
                                 ? SteamLibrary.errorText
-                                : "Install a game in Steam, GOG, Lutris, Heroic, Faugus, RetroArch, PCSX2, Ryujinx, or Battle.net, then rescan your library."
-                onGameActivated: index => root.openGame(index)
-                onFavoriteToggled: index => Library.toggleFavorite(index)
+                                : "Install a game in Steam, GOG, Lutris, Heroic, Faugus, RetroArch, PCSX2, Ryujinx, Battle.net, or Kodi, then rescan your library."
+                onGameActivated: index => root.activateLibraryItem(index)
+                onFavoriteToggled: index => {
+                    if (root.kodiBrowsing) {
+                        return
+                    }
+                    Library.toggleFavorite(index)
+                }
                 onCoverRequested: function(source, appId) {
                     if (source === "Steam" && SteamLibrary) {
                         SteamLibrary.requestCover(appId)
@@ -1483,12 +1569,15 @@ ApplicationWindow {
         anchors.fill: parent
         visible: root.couchMode && !root.detailOpen
         enabled: visible && root.navigationContainer() === null
-        libraryModel: Library
+        libraryModel: root.activeLibraryModel
         scanning: root.libraryScanning
         viewOverride: CouchLibraryViewOverride
 
-        onGameActivated: index => root.openGame(index)
+        onGameActivated: index => root.activateLibraryItem(index)
         onFavoriteToggled: function(index) {
+            if (root.kodiBrowsing) {
+                return
+            }
             Library.toggleFavorite(index)
             couchLibraryView.refreshCurrentGame()
         }
@@ -2030,7 +2119,12 @@ ApplicationWindow {
                           status: RyujinxLibrary ? RyujinxLibrary.statusText : "Unavailable",
                           error: RyujinxLibrary ? RyujinxLibrary.errorText : "",
                           paths: RyujinxLibrary ? RyujinxLibrary.detectedPaths : [],
-                          lastScan: RyujinxLibrary ? RyujinxLibrary.lastScan : 0 }
+                          lastScan: RyujinxLibrary ? RyujinxLibrary.lastScan : 0 },
+                        { name: "KODI", enabled: Preferences.kodiEnabled,
+                          status: KodiLibrary ? KodiLibrary.statusText : "Unavailable",
+                          error: KodiLibrary ? KodiLibrary.errorText : "",
+                          paths: KodiLibrary ? KodiLibrary.detectedPaths : [],
+                          lastScan: KodiLibrary ? KodiLibrary.lastScan : 0 }
                     ]
                     ColumnLayout {
                         required property var modelData
@@ -2084,6 +2178,10 @@ ApplicationWindow {
                                         Preferences.ryujinxEnabled = !Preferences.ryujinxEnabled
                                         nowEnabled = Preferences.ryujinxEnabled
                                         if (Preferences.ryujinxEnabled) RyujinxLibrary.refresh()
+                                    } else if (modelData.name === "KODI") {
+                                        Preferences.kodiEnabled = !Preferences.kodiEnabled
+                                        nowEnabled = Preferences.kodiEnabled
+                                        if (Preferences.kodiEnabled && KodiLibrary) KodiLibrary.refresh()
                                     } else {
                                         Preferences.retroArchEnabled = !Preferences.retroArchEnabled
                                         nowEnabled = Preferences.retroArchEnabled
@@ -2107,6 +2205,7 @@ ApplicationWindow {
                                     else if (modelData.name === "FAUGUS") FaugusLibrary.refresh()
                                     else if (modelData.name === "PCSX2") Pcsx2Library.refresh()
                                     else if (modelData.name === "RYUJINX") RyujinxLibrary.refresh()
+                                    else if (modelData.name === "KODI" && KodiLibrary) KodiLibrary.refresh()
                                     else RetroArchLibrary.refresh()
                                 }
                             }
@@ -2906,6 +3005,15 @@ ApplicationWindow {
     }
 
     Connections {
+        target: Library
+        function onSourceFilterChanged() {
+            while (KodiLibrary && KodiLibrary.browsing) {
+                KodiLibrary.goBack()
+            }
+        }
+    }
+
+    Connections {
         target: Controller
         function onControllerChanged() {
             if (Controller.connected && root.couchMode) {
@@ -2927,6 +3035,9 @@ ApplicationWindow {
             root.toggleLibraryControls()
         }
         function onFavoriteRequested() {
+            if (root.kodiBrowsing) {
+                return
+            }
             if (root.detailOpen && !root.diagnosticsOpen && !root.linkDialogOpen
                     && !root.collectionDeleteOpen) {
                 Library.toggleFavorite(root.selectedIndex)

@@ -32,6 +32,7 @@ public:
                                                       const QString& runner, bool flatpak);
   [[nodiscard]] static LaunchCommand gogCommand(const QString& id, const QString& installPath,
                                                 const QString& winePrefix = {});
+  [[nodiscard]] static LaunchCommand kodiCommand(const QString& targetPath, bool flatpak);
   Q_INVOKABLE bool launch(const QString& source, const QString& id, bool flatpak = false,
                           const QString& runner = {}, const QString& installPath = {},
                           const QString& launchTarget = {});
@@ -54,6 +55,7 @@ private:
   bool launchBattleNet(const QString& id, const QString& prefix, const QString& runner,
                        bool flatpak, bool manageOnly);
   bool launchGog(const QString& id, const QString& installPath, bool manageOnly);
+  bool launchKodi(const QString& id, const QString& filePath, bool flatpak, bool manageOnly);
   [[nodiscard]] QString flatpakError(const QString& appId, const QString& launcherName) const;
   void setError(const QString& error);
   QString m_lastError;

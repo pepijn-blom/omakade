@@ -16,6 +16,7 @@
 #include "library/FaugusGameModel.h"
 #include "library/GameRoles.h"
 #include "library/HeroicGameModel.h"
+#include "library/KodiGameModel.h"
 #include "library/LibraryFilterModel.h"
 #include "library/LutrisGameModel.h"
 #include "library/MockGameModel.h"
@@ -30,6 +31,7 @@
 #include "sources/battlenet/BattleNetScanner.h"
 #include "sources/faugus/FaugusScanner.h"
 #include "sources/heroic/HeroicScanner.h"
+#include "sources/kodi/KodiScanner.h"
 #include "sources/pcsx2/Pcsx2Scanner.h"
 #include "sources/ryujinx/RyujinxScanner.h"
 #include "sources/lutris/LutrisScanner.h"
@@ -557,6 +559,13 @@ private slots:
   void malformedBattleNetDataDoesNotReplaceCachedGames();
   void oversizedBattleNetDatabaseDoesNotReplaceCachedGames();
   void battleNetLauncherBuildsSafeCommands();
+  void kodiScannerParsesJsonRpcSourcesAndXml();
+  void kodiScannerParsesLibraryPayloads();
+  void kodiScannerParsesDirectoryAndPrepareDownload();
+  void kodiPlayerOpenPayloadAndCommand();
+  void kodiGameModelCachesSourcesAndBrowseStack();
+  void kodiBrowseFallsBackToDirectoryListing();
+  void kodiReadsLocalMyVideosDatabase();
   void launcherReportsInvalidAndStaleTargets();
   void igdbApiBuildsSafeQueriesAndParsesInsights();
   void igdbInsightsLoadFromOfflineCache();
@@ -3244,6 +3253,391 @@ void CoreTests::stressLibraryContainsOneThousandGames() {
            QStringLiteral("Wild Orbit 40"));
 }
 
+void CoreTests::kodiScannerParsesJsonRpcSourcesAndXml() {
+  const QByteArray json = R"({
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "sources": [
+        {"file": "nfs://192.168.0.2/volume1/downloads/series/", "label": "series"}
+      ]
+    }
+  })";
+  const QVector<KodiSourceRecord> rpc =
+      KodiScanner::parseJsonRpcSources(json, QStringLiteral("video"), false);
+  QCOMPARE(rpc.size(), 1);
+  QCOMPARE(rpc.constFirst().title, QStringLiteral("series"));
+  QCOMPARE(rpc.constFirst().path, QStringLiteral("nfs://192.168.0.2/volume1/downloads/series/"));
+  QCOMPARE(rpc.constFirst().mediaType, QStringLiteral("video"));
+  QCOMPARE(rpc.constFirst().sourceId,
+           KodiScanner::generateSourceId(QStringLiteral("video"), rpc.constFirst().path,
+                                         QStringLiteral("series")));
+  QVERIFY(KodiScanner::isSeriesLike(rpc.constFirst().title, rpc.constFirst().path,
+                                    rpc.constFirst().mediaType));
+  QVERIFY(!KodiScanner::isMovieLike(rpc.constFirst().title, rpc.constFirst().path,
+                                    rpc.constFirst().mediaType));
+
+  const QString xml = QStringLiteral(
+      "<sources><video><source><name>series</name>"
+      "<path>nfs://192.168.0.2/volume1/downloads/series/</path></source></video>"
+      "<music><source><name>Music</name><path>/music/</path></source></music></sources>");
+  const QVector<KodiSourceRecord> local =
+      KodiScanner::parseSourcesXml(xml, QStringLiteral("/tmp/kodi"), false);
+  QCOMPARE(local.size(), 2);
+  QCOMPARE(local.at(0).title, QStringLiteral("series"));
+  QCOMPARE(local.at(0).mediaType, QStringLiteral("video"));
+  QCOMPARE(local.at(1).title, QStringLiteral("Music"));
+  QCOMPARE(local.at(1).mediaType, QStringLiteral("music"));
+}
+
+void CoreTests::kodiScannerParsesLibraryPayloads() {
+  const QVector<KodiLibraryItem> shows = KodiScanner::parseTvShows(R"({
+    "result": {
+      "tvshows": [{
+        "tvshowid": 12,
+        "title": "The Expanse",
+        "year": 2015,
+        "plot": "Space.",
+        "file": "nfs://host/series/The Expanse/",
+        "episode": 62,
+        "thumbnail": "image://video@show",
+        "art": {"poster": "image://poster"}
+      }]
+    }
+  })");
+  QCOMPARE(shows.size(), 1);
+  QCOMPARE(shows.constFirst().itemId, QStringLiteral("kodi:tvshow:12"));
+  QCOMPARE(shows.constFirst().title, QStringLiteral("The Expanse"));
+  QCOMPARE(shows.constFirst().year, 2015);
+  QCOMPARE(shows.constFirst().episodeCount, 62);
+  QVERIFY(shows.constFirst().container);
+
+  const QVector<KodiLibraryItem> seasons = KodiScanner::parseSeasons(R"({
+    "result": {
+      "seasons": [{
+        "tvshowid": 12,
+        "season": 1,
+        "label": "Season 1",
+        "showtitle": "The Expanse",
+        "episode": 10,
+        "art": {"poster": "image://season"}
+      }]
+    }
+  })",
+                                                                    12);
+  QCOMPARE(seasons.size(), 1);
+  QCOMPARE(seasons.constFirst().itemId, QStringLiteral("kodi:season:12:1"));
+  QCOMPARE(seasons.constFirst().season, 1);
+  QVERIFY(seasons.constFirst().container);
+
+  const QVector<KodiLibraryItem> episodes = KodiScanner::parseEpisodes(R"({
+    "result": {
+      "episodes": [{
+        "episodeid": 7,
+        "tvshowid": 12,
+        "season": 1,
+        "episode": 3,
+        "title": "Remember the Cant",
+        "plot": "Belter station.",
+        "file": "nfs://host/series/The Expanse/S01E03.mkv",
+        "thumbnail": "image://episode"
+      }]
+    }
+  })");
+  QCOMPARE(episodes.size(), 1);
+  QCOMPARE(episodes.constFirst().itemId, QStringLiteral("kodi:episode:7"));
+  QCOMPARE(episodes.constFirst().episodeNumber, 3);
+  QCOMPARE(episodes.constFirst().path,
+           QStringLiteral("nfs://host/series/The Expanse/S01E03.mkv"));
+  QVERIFY(!episodes.constFirst().container);
+
+  const QVector<KodiLibraryItem> movies = KodiScanner::parseMovies(R"({
+    "result": {
+      "movies": [{
+        "movieid": 3,
+        "title": "Arrival",
+        "year": 2016,
+        "plot": "Language.",
+        "file": "nfs://host/movies/Arrival.mkv"
+      }]
+    }
+  })");
+  QCOMPARE(movies.size(), 1);
+  QCOMPARE(movies.constFirst().itemId, QStringLiteral("kodi:movie:3"));
+  QVERIFY(!movies.constFirst().container);
+  QVERIFY(KodiScanner::isMovieLike(QStringLiteral("movies"),
+                                   QStringLiteral("nfs://host/movies/"),
+                                   QStringLiteral("video")));
+}
+
+void CoreTests::kodiScannerParsesDirectoryAndPrepareDownload() {
+  const QVector<KodiLibraryItem> items = KodiScanner::parseDirectory(R"({
+    "result": {
+      "files": [
+        {"file": "nfs://host/series/Show/", "filetype": "directory", "label": "Show"},
+        {"file": "nfs://host/series/Show/S01E01.mkv", "filetype": "file", "label": "S01E01"}
+      ]
+    }
+  })");
+  QCOMPARE(items.size(), 2);
+  QVERIFY(items.at(0).container);
+  QVERIFY(items.at(0).itemId.startsWith(QStringLiteral("kodi:dir:")));
+  QVERIFY(!items.at(1).container);
+  QVERIFY(items.at(1).itemId.startsWith(QStringLiteral("kodi:file:")));
+
+  QCOMPARE(KodiScanner::parsePrepareDownload(
+               R"({"result":{"protocol":"http","details":{"path":"vfs/%2fimage"}}})"),
+           QStringLiteral("http://vfs/%2fimage"));
+  QCOMPARE(KodiScanner::parsePrepareDownload(
+               R"({"result":{"details":{"path":"https://kodi.local/art.png"}}})"),
+           QStringLiteral("https://kodi.local/art.png"));
+  QCOMPARE(KodiScanner::httpArtworkUrl(QStringLiteral("http://127.0.0.1:8080/jsonrpc"),
+                                       QStringLiteral("image://video@show")),
+           QStringLiteral("http://127.0.0.1:8080/image/image%3A%2F%2Fvideo%40show"));
+}
+
+void CoreTests::kodiPlayerOpenPayloadAndCommand() {
+  const QJsonObject episode =
+      QJsonDocument::fromJson(KodiScanner::playerOpenPayload(QStringLiteral("kodi:episode:42")))
+          .object();
+  QCOMPARE(episode.value(QStringLiteral("method")).toString(), QStringLiteral("Player.Open"));
+  QCOMPARE(episode.value(QStringLiteral("params"))
+               .toObject()
+               .value(QStringLiteral("item"))
+               .toObject()
+               .value(QStringLiteral("episodeid"))
+               .toInt(),
+           42);
+
+  const QJsonObject movie =
+      QJsonDocument::fromJson(KodiScanner::playerOpenPayload(QStringLiteral("kodi:movie:9")))
+          .object();
+  QCOMPARE(movie.value(QStringLiteral("params"))
+               .toObject()
+               .value(QStringLiteral("item"))
+               .toObject()
+               .value(QStringLiteral("movieid"))
+               .toInt(),
+           9);
+  QVERIFY(KodiScanner::playerOpenPayload(QStringLiteral("kodi:tvshow:12")).isEmpty());
+
+  const QString path = QStringLiteral("nfs://host/series/The Expanse/S01E03.mkv");
+  const LaunchCommand native = GameLauncher::kodiCommand(path, false);
+  QCOMPARE(native.program, QStringLiteral("kodi"));
+  QCOMPARE(native.arguments, QStringList({path}));
+  const LaunchCommand flatpak = GameLauncher::kodiCommand(path, true);
+  QCOMPARE(flatpak.program, QStringLiteral("flatpak"));
+  QCOMPARE(flatpak.arguments,
+           QStringList({QStringLiteral("run"), QStringLiteral("tv.kodi.Kodi"), path}));
+  const LaunchCommand manage = GameLauncher::kodiCommand({}, false);
+  QCOMPARE(manage.program, QStringLiteral("kodi"));
+  QVERIFY(manage.arguments.isEmpty());
+}
+
+void CoreTests::kodiGameModelCachesSourcesAndBrowseStack() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString database = directory.path() + QStringLiteral("/omakade.sqlite3");
+  const QString seriesPath = QStringLiteral("nfs://192.168.0.2/volume1/downloads/series/");
+  const QString moviesPath = QStringLiteral("nfs://192.168.0.2/volume1/downloads/movies/");
+
+  KodiScanResult scan;
+  scan.roots.append(directory.path());
+  KodiSourceRecord series;
+  series.sourceId =
+      KodiScanner::generateSourceId(QStringLiteral("video"), seriesPath, QStringLiteral("series"));
+  series.title = QStringLiteral("series");
+  series.path = seriesPath;
+  series.mediaType = QStringLiteral("video");
+  KodiSourceRecord movies;
+  movies.sourceId =
+      KodiScanner::generateSourceId(QStringLiteral("video"), moviesPath, QStringLiteral("movies"));
+  movies.title = QStringLiteral("movies");
+  movies.path = moviesPath;
+  movies.mediaType = QStringLiteral("video");
+  KodiSourceRecord music;
+  music.sourceId =
+      KodiScanner::generateSourceId(QStringLiteral("music"), QStringLiteral("/music/"),
+                                    QStringLiteral("Music"));
+  music.title = QStringLiteral("Music");
+  music.path = QStringLiteral("/music/");
+  music.mediaType = QStringLiteral("music");
+  scan.sources = {series, movies, music};
+
+  KodiGameModel model(database);
+  model.applyScan(scan);
+  QCOMPARE(model.rowCount(), 3);
+  QCOMPARE(model.data(model.index(0), GameRoles::Source).toString(), QStringLiteral("Kodi"));
+
+  KodiLibrarySnapshot snapshot;
+  KodiLibraryItem show;
+  show.kind = KodiItemKind::TvShow;
+  show.itemId = QStringLiteral("kodi:tvshow:12");
+  show.title = QStringLiteral("The Expanse");
+  show.path = seriesPath + QStringLiteral("The Expanse/");
+  show.tvshowId = 12;
+  show.container = true;
+  snapshot.tvShows.append(show);
+
+  KodiLibraryItem season;
+  season.kind = KodiItemKind::Season;
+  season.itemId = QStringLiteral("kodi:season:12:1");
+  season.title = QStringLiteral("Season 1");
+  season.tvshowId = 12;
+  season.season = 1;
+  season.container = true;
+  snapshot.seasonsByShow[12].append(season);
+
+  KodiLibraryItem episode;
+  episode.kind = KodiItemKind::Episode;
+  episode.itemId = QStringLiteral("kodi:episode:7");
+  episode.title = QStringLiteral("Remember the Cant");
+  episode.path = seriesPath + QStringLiteral("The Expanse/S01E03.mkv");
+  episode.tvshowId = 12;
+  episode.season = 1;
+  episode.episodeId = 7;
+  episode.container = false;
+  snapshot.episodesBySeason[KodiScanner::seasonKey(12, 1)].append(episode);
+
+  KodiLibraryItem movie;
+  movie.kind = KodiItemKind::Movie;
+  movie.itemId = QStringLiteral("kodi:movie:3");
+  movie.title = QStringLiteral("Arrival");
+  movie.path = moviesPath + QStringLiteral("Arrival.mkv");
+  movie.movieId = 3;
+  movie.container = false;
+  snapshot.movies.append(movie);
+  model.applyLibrarySnapshot(snapshot);
+
+  UnifiedGameModel games(database);
+  games.addSourceModel(&model);
+  LibraryFilterModel library;
+  library.setSourceModel(&games);
+  library.setSourceFilter(QStringLiteral("Kodi"));
+  QCOMPARE(library.rowCount(), 3);
+
+  QVERIFY(model.openIfContainer(series.sourceId));
+  QCOMPARE(model.browseDepth(), 1);
+  QVERIFY(model.browsing());
+  QCOMPARE(model.browseItems()->rowCount(), 1);
+  QCOMPARE(model.browseItems()->data(model.browseItems()->index(0), GameRoles::Title).toString(),
+           QStringLiteral("The Expanse"));
+  QCOMPARE(library.rowCount(), 3);
+
+  QVERIFY(model.openIfContainer(QStringLiteral("kodi:tvshow:12")));
+  QCOMPARE(model.browseDepth(), 2);
+  QCOMPARE(model.browseItems()->rowCount(), 1);
+  QCOMPARE(model.browseItems()->data(model.browseItems()->index(0), GameRoles::Title).toString(),
+           QStringLiteral("Season 1"));
+
+  QVERIFY(model.openIfContainer(QStringLiteral("kodi:season:12:1")));
+  QCOMPARE(model.browseDepth(), 3);
+  QCOMPARE(model.browseItems()->rowCount(), 1);
+  QCOMPARE(model.browseItems()->data(model.browseItems()->index(0), GameRoles::AppId).toString(),
+           QStringLiteral("kodi:episode:7"));
+  QVERIFY(!model.openIfContainer(QStringLiteral("kodi:episode:7")));
+  QCOMPARE(model.browseDepth(), 3);
+
+  QVERIFY(model.goBack());
+  QCOMPARE(model.browseDepth(), 2);
+  QVERIFY(model.goBack());
+  QVERIFY(model.goBack());
+  QVERIFY(!model.browsing());
+  QVERIFY(!model.goBack());
+
+  QVERIFY(!model.openIfContainer(music.sourceId));
+  QVERIFY(model.openIfContainer(movies.sourceId));
+  QCOMPARE(model.browseItems()->rowCount(), 1);
+  QCOMPARE(model.browseItems()->data(model.browseItems()->index(0), GameRoles::Title).toString(),
+           QStringLiteral("Arrival"));
+  QVERIFY(!model.openIfContainer(QStringLiteral("kodi:movie:3")));
+}
+
+void CoreTests::kodiBrowseFallsBackToDirectoryListing() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString seriesPath = QStringLiteral("nfs://192.168.0.2/volume1/downloads/series/");
+  KodiScanResult scan;
+  scan.roots.append(directory.path());
+  KodiSourceRecord series;
+  series.sourceId =
+      KodiScanner::generateSourceId(QStringLiteral("video"), seriesPath, QStringLiteral("series"));
+  series.title = QStringLiteral("series");
+  series.path = seriesPath;
+  series.mediaType = QStringLiteral("video");
+  scan.sources.append(series);
+
+  KodiGameModel model(directory.path() + QStringLiteral("/omakade.sqlite3"));
+  model.applyScan(scan);
+
+  KodiLibrarySnapshot snapshot;
+  KodiLibraryItem folder;
+  folder.kind = KodiItemKind::Directory;
+  folder.itemId = QStringLiteral("kodi:dir:show");
+  folder.title = QStringLiteral("The Expanse");
+  folder.path = seriesPath + QStringLiteral("The Expanse/");
+  folder.container = true;
+  snapshot.childrenByPath.insert(seriesPath, {folder});
+  model.applyLibrarySnapshot(snapshot);
+
+  QVERIFY(model.openIfContainer(series.sourceId));
+  QCOMPARE(model.browseItems()->rowCount(), 1);
+  QCOMPARE(model.browseItems()->data(model.browseItems()->index(0), GameRoles::Title).toString(),
+           QStringLiteral("The Expanse"));
+}
+
+void CoreTests::kodiReadsLocalMyVideosDatabase() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString userdata = directory.path() + QStringLiteral("/userdata");
+  const QString databasePath = userdata + QStringLiteral("/Database/MyVideos131.db");
+  QDir().mkpath(QFileInfo(databasePath).absolutePath());
+  {
+    QSqlDatabase database =
+        QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("kodi-myvideos-test"));
+    database.setDatabaseName(databasePath);
+    QVERIFY(database.open());
+    QSqlQuery query(database);
+    QVERIFY(query.exec(QStringLiteral("CREATE TABLE path (idPath INTEGER, strPath TEXT)")));
+    QVERIFY(query.exec(QStringLiteral(
+        "CREATE TABLE files (idFile INTEGER, idPath INTEGER, strFilename TEXT)")));
+    QVERIFY(query.exec(
+        QStringLiteral("CREATE TABLE art (media_id INTEGER, media_type TEXT, type TEXT, url TEXT)")));
+    QVERIFY(query.exec(QStringLiteral("CREATE TABLE tvshow (idShow INTEGER, c00 TEXT, c01 TEXT)")));
+    QVERIFY(query.exec(
+        QStringLiteral("CREATE TABLE seasons (idShow INTEGER, season INTEGER, name TEXT)")));
+    QVERIFY(query.exec(QStringLiteral(
+        "CREATE TABLE episode (idEpisode INTEGER, idShow INTEGER, c00 TEXT, c01 TEXT, "
+        "c12 TEXT, c13 TEXT, idFile INTEGER)")));
+    QVERIFY(query.exec(
+        QStringLiteral("CREATE TABLE movie (idMovie INTEGER, c00 TEXT, c01 TEXT, idFile INTEGER)")));
+    QVERIFY(query.exec(
+        QStringLiteral("INSERT INTO path VALUES (1, 'nfs://host/series/The Expanse/')")));
+    QVERIFY(query.exec(QStringLiteral("INSERT INTO files VALUES (8, 1, 'S01E03.mkv')")));
+    QVERIFY(query.exec(QStringLiteral(
+        "INSERT INTO tvshow VALUES (12, 'The Expanse', 'Space.')")));
+    QVERIFY(query.exec(QStringLiteral("INSERT INTO seasons VALUES (12, 1, 'Season 1')")));
+    QVERIFY(query.exec(QStringLiteral(
+        "INSERT INTO episode VALUES (7, 12, 'Remember the Cant', 'Belter station.', '1', '3', 8)")));
+    QVERIFY(query.exec(
+        QStringLiteral("INSERT INTO movie VALUES (3, 'Arrival', 'Language.', 8)")));
+    QVERIFY(query.exec(QStringLiteral(
+        "INSERT INTO art VALUES (12, 'tvshow', 'poster', 'image://poster')")));
+  }
+  QSqlDatabase::removeDatabase(QStringLiteral("kodi-myvideos-test"));
+
+  QCOMPARE(KodiScanner::findMyVideosDatabases(userdata), QStringList({databasePath}));
+  const KodiLibrarySnapshot snapshot = KodiScanner::readMyVideos(databasePath);
+  QCOMPARE(snapshot.tvShows.size(), 1);
+  QCOMPARE(snapshot.tvShows.constFirst().title, QStringLiteral("The Expanse"));
+  QCOMPARE(snapshot.seasonsByShow.value(12).size(), 1);
+  QCOMPARE(snapshot.episodesBySeason.value(KodiScanner::seasonKey(12, 1)).size(), 1);
+  QCOMPARE(snapshot.episodesBySeason.value(KodiScanner::seasonKey(12, 1)).constFirst().path,
+           QStringLiteral("nfs://host/series/The Expanse/S01E03.mkv"));
+  QCOMPARE(snapshot.movies.size(), 1);
+  QCOMPARE(snapshot.movies.constFirst().title, QStringLiteral("Arrival"));
+}
+
 void CoreTests::settingsPersistReducedMotionAndCacheLimit() {
   QTemporaryDir directory;
   QVERIFY(directory.isValid());
@@ -3264,8 +3658,10 @@ void CoreTests::settingsPersistReducedMotionAndCacheLimit() {
     settings.setRetroArchEnabled(false);
     QVERIFY(settings.pcsx2AutoEnabled());
     QVERIFY(settings.ryujinxAutoEnabled());
+    QVERIFY(settings.kodiAutoEnabled());
     settings.setPcsx2Enabled(false);  // explicit: clears the auto flag
     settings.setRyujinxEnabled(false);
+    settings.setKodiEnabled(false);
     settings.setBattleNetEnabled(false);
     settings.setCloseAfterLaunch(true);
     settings.setCouchModeEnabled(true);
@@ -3286,6 +3682,8 @@ void CoreTests::settingsPersistReducedMotionAndCacheLimit() {
   QVERIFY(!reloaded.ryujinxEnabled());
   QVERIFY(!reloaded.pcsx2AutoEnabled());  // explicit write cleared auto-detection
   QVERIFY(!reloaded.ryujinxAutoEnabled());
+  QVERIFY(!reloaded.kodiEnabled());
+  QVERIFY(!reloaded.kodiAutoEnabled());
   QVERIFY(!reloaded.battleNetEnabled());
   QVERIFY(reloaded.closeAfterLaunch());
   QVERIFY(reloaded.couchModeEnabled());
@@ -3304,10 +3702,13 @@ void CoreTests::settingsPersistReducedMotionAndCacheLimit() {
   autoConfig.close();
   QVERIFY(!autoContents.contains(QStringLiteral("pcsx2_enabled")));
   QVERIFY(!autoContents.contains(QStringLiteral("ryujinx_enabled")));
+  QVERIFY(!autoContents.contains(QStringLiteral("kodi_enabled")));
   AppSettings autoReloaded(autoPath);
   QVERIFY(autoReloaded.pcsx2AutoEnabled());
   QVERIFY(autoReloaded.ryujinxAutoEnabled());
+  QVERIFY(autoReloaded.kodiAutoEnabled());
   QVERIFY(!autoReloaded.pcsx2Enabled());
+  QVERIFY(!autoReloaded.kodiEnabled());
 }
 
 void CoreTests::launchKeysRoundTripAndResolveInstallations() {

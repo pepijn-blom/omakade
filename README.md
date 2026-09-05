@@ -26,7 +26,8 @@ Omakade 1.6.0 includes:
 - Native and Flatpak Steam, Lutris, Heroic, Faugus, RetroArch, PCSX2, and
   Ryujinx discovery, plus direct GOG installation discovery,
   including Steam non-Steam shortcuts and games sideloaded into Heroic, plus
-  Battle.net games from Wine, Proton, and Bottles prefixes
+  Battle.net games from Wine, Proton, and Bottles prefixes, and Kodi video
+  sources with a Series browse stack for shows, seasons, and episodes
 - One-click details and delegated launching through the owning platform
 - Omarchy palette, font, transparency, and live theme updates
 - Search, favorites, hidden games, sorting, and source filters

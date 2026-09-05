@@ -178,6 +178,37 @@ void AppSettings::setRyujinxEnabled(bool value) {
   emit sourcesChanged();
 }
 
+bool AppSettings::kodiEnabled() const { return m_kodiEnabled; }
+
+void AppSettings::setKodiEnabled(bool value) {
+  const bool wasAuto = m_kodiAuto;
+  m_kodiAuto = false;
+  if (m_kodiEnabled == value && !wasAuto) {
+    return;
+  }
+  m_kodiEnabled = value;
+  save();
+  emit sourcesChanged();
+}
+
+bool AppSettings::kodiAutoEnabled() const { return m_kodiAuto; }
+
+void AppSettings::setKodiAutoEnabled(bool value) { m_kodiAuto = value; }
+
+QString AppSettings::kodiUrl() const { return m_kodiUrl; }
+
+void AppSettings::setKodiUrl(const QString& value) {
+  const QString normalized = value.trimmed().isEmpty()
+                                 ? QStringLiteral("http://127.0.0.1:8080/jsonrpc")
+                                 : value.trimmed();
+  if (m_kodiUrl == normalized) {
+    return;
+  }
+  m_kodiUrl = normalized;
+  save();
+  emit kodiUrlChanged();
+}
+
 bool AppSettings::pcsx2AutoEnabled() const { return m_pcsx2Auto; }
 
 void AppSettings::setPcsx2AutoEnabled(bool value) { m_pcsx2Auto = value; }
@@ -281,6 +312,14 @@ void AppSettings::load() {
   m_ryujinxAuto = !ryujinxKey.match(contents).hasMatch();
   m_ryujinxEnabled = readEnabled(QStringLiteral("ryujinx_enabled"), false);
   m_battleNetEnabled = readEnabled(QStringLiteral("battlenet_enabled"), true);
+  const QRegularExpression kodiKey(QStringLiteral("(?m)^kodi_enabled\\s*=\\s*(true|false)\\s*$"));
+  m_kodiAuto = !kodiKey.match(contents).hasMatch();
+  m_kodiEnabled = readEnabled(QStringLiteral("kodi_enabled"), false);
+  const QRegularExpression kodiUrl(QStringLiteral("(?m)^kodi_url\\s*=\\s*\"([^\"]+)\"\\s*$"));
+  const QRegularExpressionMatch kodiUrlMatch = kodiUrl.match(contents);
+  if (kodiUrlMatch.hasMatch()) {
+    m_kodiUrl = kodiUrlMatch.captured(1);
+  }
   m_closeAfterLaunch = readEnabled(QStringLiteral("close_after_launch"), false);
   m_couchModeEnabled = readEnabled(QStringLiteral("couch_mode_enabled"), false);
   const QRegularExpression couchLibraryView(
@@ -350,6 +389,11 @@ void AppSettings::save() const {
     contents += QStringLiteral("ryujinx_enabled = %1\n")
                     .arg(m_ryujinxEnabled ? QStringLiteral("true") : QStringLiteral("false"));
   }
+  if (!m_kodiAuto) {
+    contents += QStringLiteral("kodi_enabled = %1\n")
+                    .arg(m_kodiEnabled ? QStringLiteral("true") : QStringLiteral("false"));
+  }
+  contents += QStringLiteral("kodi_url = \"%1\"\n").arg(m_kodiUrl);
   contents += QStringLiteral("close_after_launch = %1\n"
                              "couch_mode_enabled = %2\n"
                              "couch_library_view = \"%3\"\n"

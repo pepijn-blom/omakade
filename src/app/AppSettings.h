@@ -25,6 +25,8 @@ class AppSettings final : public QObject {
   Q_PROPERTY(bool ryujinxEnabled READ ryujinxEnabled WRITE setRyujinxEnabled NOTIFY sourcesChanged)
   Q_PROPERTY(
       bool battleNetEnabled READ battleNetEnabled WRITE setBattleNetEnabled NOTIFY sourcesChanged)
+  Q_PROPERTY(bool kodiEnabled READ kodiEnabled WRITE setKodiEnabled NOTIFY sourcesChanged)
+  Q_PROPERTY(QString kodiUrl READ kodiUrl WRITE setKodiUrl NOTIFY kodiUrlChanged)
   Q_PROPERTY(bool closeAfterLaunch READ closeAfterLaunch WRITE setCloseAfterLaunch NOTIFY
                  closeAfterLaunchChanged)
   Q_PROPERTY(bool couchModeEnabled READ couchModeEnabled WRITE setCouchModeEnabled NOTIFY
@@ -73,6 +75,12 @@ public:
   void setRyujinxAutoEnabled(bool value);
   [[nodiscard]] bool battleNetEnabled() const;
   void setBattleNetEnabled(bool value);
+  [[nodiscard]] bool kodiEnabled() const;
+  void setKodiEnabled(bool value);
+  [[nodiscard]] bool kodiAutoEnabled() const;
+  void setKodiAutoEnabled(bool value);
+  [[nodiscard]] QString kodiUrl() const;
+  void setKodiUrl(const QString& value);
   [[nodiscard]] bool closeAfterLaunch() const;
   void setCloseAfterLaunch(bool value);
   [[nodiscard]] bool couchModeEnabled() const;
@@ -91,6 +99,7 @@ signals:
   void igdbClientIdChanged();
   void retroAchievementsUsernameChanged();
   void sourcesChanged();
+  void kodiUrlChanged();
   void closeAfterLaunchChanged();
   void couchModeEnabledChanged();
   void couchLibraryViewChanged();
@@ -118,6 +127,9 @@ private:
   bool m_pcsx2Auto = true;
   bool m_ryujinxAuto = true;
   bool m_battleNetEnabled = true;
+  bool m_kodiEnabled = false;
+  bool m_kodiAuto = true;
+  QString m_kodiUrl = QStringLiteral("http://127.0.0.1:8080/jsonrpc");
   bool m_closeAfterLaunch = false;
   bool m_couchModeEnabled = false;
   QString m_couchLibraryView = QStringLiteral("detail");

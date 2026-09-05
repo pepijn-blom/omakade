@@ -11,6 +11,7 @@
 #include "library/BattleNetGameModel.h"
 #include "library/FaugusGameModel.h"
 #include "library/HeroicGameModel.h"
+#include "library/KodiGameModel.h"
 #include "library/LibraryFilterModel.h"
 #include "library/LutrisGameModel.h"
 #include "library/MockGameModel.h"
@@ -235,6 +236,7 @@ int main(int argc, char* argv[]) {
   std::unique_ptr<Pcsx2GameModel> pcsx2Games;
   std::unique_ptr<RyujinxGameModel> ryujinxGames;
   std::unique_ptr<BattleNetGameModel> battleNetGames;
+  std::unique_ptr<KodiGameModel> kodiGames;
   SteamGameModel* steamLibrary = nullptr;
   LutrisGameModel* lutrisLibrary = nullptr;
   HeroicGameModel* heroicLibrary = nullptr;
@@ -243,6 +245,7 @@ int main(int argc, char* argv[]) {
   Pcsx2GameModel* pcsx2Library = nullptr;
   RyujinxGameModel* ryujinxLibrary = nullptr;
   BattleNetGameModel* battleNetLibrary = nullptr;
+  KodiGameModel* kodiLibrary = nullptr;
   QString libraryDatabasePath;
   if (demoMode || stressMode || navigationTest) {
     games =
@@ -267,6 +270,8 @@ int main(int argc, char* argv[]) {
     battleNetGames =
         std::make_unique<BattleNetGameModel>(steamLibrary->databasePath(), &preferences);
     battleNetLibrary = battleNetGames.get();
+    kodiGames = std::make_unique<KodiGameModel>(steamLibrary->databasePath(), &preferences);
+    kodiLibrary = kodiGames.get();
   }
   if (navigationTest) {
     libraryDatabasePath = QStringLiteral(":memory:");
@@ -294,6 +299,9 @@ int main(int argc, char* argv[]) {
   if (battleNetGames != nullptr) {
     unifiedGames.addSourceModel(battleNetGames.get());
   }
+  if (kodiGames != nullptr) {
+    unifiedGames.addSourceModel(kodiGames.get());
+  }
   const auto applySourcePreferences = [&] {
     unifiedGames.setSourceEnabled(QStringLiteral("Steam"), preferences.steamEnabled());
     unifiedGames.setSourceEnabled(QStringLiteral("Lutris"), preferences.lutrisEnabled());
@@ -304,6 +312,7 @@ int main(int argc, char* argv[]) {
     unifiedGames.setSourceEnabled(QStringLiteral("PCSX2"), preferences.pcsx2Enabled());
     unifiedGames.setSourceEnabled(QStringLiteral("Ryujinx"), preferences.ryujinxEnabled());
     unifiedGames.setSourceEnabled(QStringLiteral("Battle.net"), preferences.battleNetEnabled());
+    unifiedGames.setSourceEnabled(QStringLiteral("Kodi"), preferences.kodiEnabled());
   };
   applySourcePreferences();
   QObject::connect(&preferences, &AppSettings::sourcesChanged, &unifiedGames,
@@ -321,6 +330,9 @@ int main(int argc, char* argv[]) {
     } else if (key.source.compare(QStringLiteral("Ryujinx"), Qt::CaseInsensitive) == 0 &&
                preferences.ryujinxAutoEnabled()) {
       unifiedGames.setSourceEnabled(QStringLiteral("Ryujinx"), true);
+    } else if (key.source.compare(QStringLiteral("Kodi"), Qt::CaseInsensitive) == 0 &&
+               preferences.kodiAutoEnabled()) {
+      unifiedGames.setSourceEnabled(QStringLiteral("Kodi"), true);
     }
     if (PlayRequest::findInstallation(unifiedGames, key, nullptr).isEmpty() && key.isValid()) {
       bool refreshStarted = false;
@@ -361,6 +373,11 @@ int main(int argc, char* argv[]) {
       } else if (key.source.compare(QStringLiteral("Battle.net"), Qt::CaseInsensitive) == 0 &&
                  battleNetLibrary != nullptr && preferences.battleNetEnabled()) {
         battleNetLibrary->refresh();
+        refreshStarted = true;
+      } else if (key.source.compare(QStringLiteral("Kodi"), Qt::CaseInsensitive) == 0 &&
+                 kodiLibrary != nullptr &&
+                 (preferences.kodiEnabled() || preferences.kodiAutoEnabled())) {
+        kodiLibrary->refresh();
         refreshStarted = true;
       }
       if (refreshStarted) {
@@ -486,6 +503,7 @@ int main(int argc, char* argv[]) {
   engine.rootContext()->setContextProperty(QStringLiteral("Pcsx2Library"), pcsx2Library);
   engine.rootContext()->setContextProperty(QStringLiteral("RyujinxLibrary"), ryujinxLibrary);
   engine.rootContext()->setContextProperty(QStringLiteral("BattleNetLibrary"), battleNetLibrary);
+  engine.rootContext()->setContextProperty(QStringLiteral("KodiLibrary"), kodiLibrary);
   engine.rootContext()->setContextProperty(QStringLiteral("Launcher"), &launcher);
   engine.rootContext()->setContextProperty(QStringLiteral("Preferences"), &preferences);
   engine.rootContext()->setContextProperty(QStringLiteral("Controller"), &controller);
@@ -1822,6 +1840,17 @@ int main(int argc, char* argv[]) {
   }
   if (battleNetLibrary != nullptr && preferences.battleNetEnabled()) {
     QTimer::singleShot(750, battleNetLibrary, &BattleNetGameModel::refresh);
+  }
+  if (kodiLibrary != nullptr &&
+      (preferences.kodiEnabled() || preferences.kodiAutoEnabled())) {
+    QTimer::singleShot(800, kodiLibrary, &KodiGameModel::refresh);
+    QObject::connect(kodiLibrary, &KodiGameModel::statusChanged, kodiLibrary,
+                     [&preferences, kodiLibrary] {
+                       if (kodiLibrary->kodiDetected() && preferences.kodiAutoEnabled()) {
+                         preferences.setKodiAutoEnabled(false);
+                         preferences.setKodiEnabled(true);
+                       }
+                     });
   }
 
   if (smokeTest && !renderMode) {

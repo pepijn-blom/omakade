@@ -4,15 +4,23 @@
 #include "sources/FlatpakInstall.h"
 #include "sources/battlenet/BattleNetScanner.h"
 #include "sources/heroic/HeroicScanner.h"
+#include "sources/kodi/KodiScanner.h"
 
 #include <QDesktopServices>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QStandardPaths>
+#include <QUrl>
 #include <QUrlQuery>
 
 namespace {
@@ -85,6 +93,37 @@ bool validBattleNetPrefix(const QString& prefix) {
          !cleaned.contains(QChar::Null);
 }
 
+bool tryKodiPlayerOpen(const QString& itemId) {
+  const QByteArray payload = KodiScanner::playerOpenPayload(itemId);
+  if (payload.isEmpty()) {
+    return false;
+  }
+  QString url = qEnvironmentVariable(QStringLiteral("OMAKADE_KODI_URL"));
+  if (url.isEmpty()) {
+    url = QStringLiteral("http://127.0.0.1:8080/jsonrpc");
+  }
+  QNetworkAccessManager manager;
+  QNetworkRequest request{QUrl(url)};
+  request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+  request.setTransferTimeout(2000);
+  QNetworkReply* reply = manager.post(request, payload);
+  QEventLoop loop;
+  QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+  loop.exec();
+  const bool networkOk = reply->error() == QNetworkReply::NoError;
+  const QByteArray body = reply->readAll();
+  reply->deleteLater();
+  if (!networkOk) {
+    return false;
+  }
+  const QJsonDocument document = QJsonDocument::fromJson(body);
+  if (!document.isObject()) {
+    return false;
+  }
+  const QJsonObject object = document.object();
+  return object.contains(QStringLiteral("result")) && !object.contains(QStringLiteral("error"));
+}
+
 QString battleNetExecutable(const QString& prefix) {
   const QStringList candidates = {
       prefix + QStringLiteral("/drive_c/Program Files (x86)/Battle.net/Battle.net.exe"),
@@ -134,6 +173,18 @@ QString bottlesBottleName(const QString& prefix) {
 GameLauncher::GameLauncher(QObject* parent) : QObject(parent) {}
 
 QString GameLauncher::lastError() const { return m_lastError; }
+
+LaunchCommand GameLauncher::kodiCommand(const QString& targetPath, bool flatpak) {
+  if (flatpak) {
+    QStringList arguments{QStringLiteral("run"), QStringLiteral("tv.kodi.Kodi")};
+    if (!targetPath.isEmpty()) {
+      arguments.append(targetPath);
+    }
+    return {QStringLiteral("flatpak"), arguments};
+  }
+  return targetPath.isEmpty() ? LaunchCommand{QStringLiteral("kodi"), {}}
+                              : LaunchCommand{QStringLiteral("kodi"), {targetPath}};
+}
 
 LaunchCommand GameLauncher::lutrisCommand(const QString& id, bool flatpak) {
   if (!validLutrisId(id)) {
@@ -296,6 +347,7 @@ bool GameLauncher::launch(const QString& source, const QString& id, bool flatpak
                           const QString& runner, const QString& installPath,
                           const QString& launchTarget) {
   if (source.compare(QStringLiteral("Faugus"), Qt::CaseInsensitive) != 0 &&
+      source.compare(QStringLiteral("Kodi"), Qt::CaseInsensitive) != 0 &&
       !installPath.isEmpty() && !installedTargetExists(installPath)) {
     setError(QStringLiteral(
                  "The installed files are missing. Rescan or repair this game in %1.")
@@ -343,6 +395,9 @@ bool GameLauncher::launch(const QString& source, const QString& id, bool flatpak
   if (source.compare(QStringLiteral("Battle.net"), Qt::CaseInsensitive) == 0) {
     return launchBattleNet(id, launchTarget, runner, flatpak, false);
   }
+  if (source.compare(QStringLiteral("Kodi"), Qt::CaseInsensitive) == 0) {
+    return launchKodi(id, installPath, flatpak, false);
+  }
   setError(QStringLiteral("%1 games cannot be launched yet.").arg(source));
   return false;
 }
@@ -381,6 +436,9 @@ bool GameLauncher::manage(const QString& source, const QString& id, bool flatpak
   }
   if (source.compare(QStringLiteral("Battle.net"), Qt::CaseInsensitive) == 0) {
     return launchBattleNet(id, launchTarget, runner, flatpak, true);
+  }
+  if (source.compare(QStringLiteral("Kodi"), Qt::CaseInsensitive) == 0) {
+    return launchKodi(id, {}, flatpak, true);
   }
   setError(QStringLiteral("%1 does not provide game management yet.").arg(source));
   return false;
@@ -509,6 +567,38 @@ bool GameLauncher::launchGog(const QString& id, const QString& installPath, bool
   if (!task.has_value() ||
       !QProcess::startDetached(command.program, command.arguments, task->workingDirectory)) {
     setError(QStringLiteral("GOG could not start this game."));
+    return false;
+  }
+  setError({});
+  return true;
+}
+
+bool GameLauncher::launchKodi(const QString& id, const QString& filePath, bool flatpak,
+                              bool manageOnly) {
+  if (!manageOnly && tryKodiPlayerOpen(id)) {
+    setError({});
+    return true;
+  }
+  const QString executable = flatpak ? QStringLiteral("flatpak") : QStringLiteral("kodi");
+  if (QStandardPaths::findExecutable(executable).isEmpty()) {
+    setError(flatpak ? QStringLiteral("Flatpak is not installed.")
+                     : QStringLiteral("Kodi is not installed."));
+    return false;
+  }
+  if (flatpak) {
+    const QString error = flatpakError(QStringLiteral("tv.kodi.Kodi"), QStringLiteral("Kodi"));
+    if (!error.isEmpty()) {
+      setError(error);
+      return false;
+    }
+  }
+  const LaunchCommand command = kodiCommand(manageOnly ? QString{} : filePath, flatpak);
+  if (!command.isValid()) {
+    setError(QStringLiteral("This item has an invalid Kodi target."));
+    return false;
+  }
+  if (!QProcess::startDetached(command.program, command.arguments)) {
+    setError(QStringLiteral("Kodi could not be started. Open Kodi and try again."));
     return false;
   }
   setError({});

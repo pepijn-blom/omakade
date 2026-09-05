@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add Kodi as a source and browse Series into individual shows, seasons, and
+  episodes. Play opens the selected episode in Kodi.
 - Share QML role-name definitions across nine game models without changing
   their role IDs, names, or behavior.
 
